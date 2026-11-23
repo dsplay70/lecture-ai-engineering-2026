@@ -77,3 +77,52 @@ def get_lecture_summary(lecture: int) -> str:
         available = sorted(p.stem for p in (DATA_DIR / "lectures").glob("*.md"))
         return f"第{lecture}回の要点はまだありません。用意されている回: {', '.join(available)}"
     return path.read_text(encoding="utf-8")
+
+
+def make_quiz(lecture: int) -> str:
+    """指定した回（1始まりの整数）の用語から確認問題を1問作り、問題と答えを返す。
+
+    「第2回の確認問題を出して」のように、復習のための問題を求められたときに使う。
+    返す answer は採点用の正解なので、利用者が答える前に見せない。
+    """
+    import random
+
+    terms = [e for e in load_glossary() if e["lecture"] == lecture]
+    if not terms:
+        available = sorted({e["lecture"] for e in load_glossary()})
+        return json.dumps(
+            {"error": f"第{lecture}回の用語は用語集にありません。", "available_lectures": available},
+            ensure_ascii=False,
+        )
+    term = random.choice(terms)
+    return json.dumps(
+        {"question": f"「{term['term']}」の意味は？", "answer": term["definition"], "lecture": lecture},
+        ensure_ascii=False,
+    )
+
+
+# 第3回 宿題（実装）: 学習の記録の保存先。.gitignore で共有しない設定になっている
+LEARNING_LOG_DIR = Path(__file__).resolve().parent.parent / "learning_log"
+
+
+def save_learning_log(title: str, content: str) -> str:
+    """学習の記録を learning_log/ フォルダに Markdown ファイルとして保存する。
+
+    利用者が「今日学んだことを記録して」「この内容をメモに残して」のように、
+    学習の記録を残すことを頼んだときだけ使う。title は記録の短い題名、
+    content は記録する本文（利用者の言葉と、会話で確かめた内容）。
+    保存してよいかの確認はアプリが利用者に行うので、保存を頼まれたら
+    会話の中で確認を取らず、そのままこのツールを呼ぶこと。
+    """
+    import re
+    from datetime import datetime
+
+    if not title.strip() or not content.strip():
+        return "題名か本文が空なので保存しませんでした。"
+    LEARNING_LOG_DIR.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    # ファイル名に使えない文字や、フォルダの外を指す文字（/ や ..）は _ に置き換える
+    safe = re.sub(r"[^\w\-ぁ-んァ-ヶ一-龠ー]+", "_", title.strip())[:40].strip("_") or "log"
+    path = LEARNING_LOG_DIR / f"{stamp}_{safe}.md"
+    path.write_text(f"# {title.strip()}\n\n- 保存日時: {stamp}\n\n{content.strip()}\n", encoding="utf-8")
+    return f"保存しました: learning_log/{path.name}"
