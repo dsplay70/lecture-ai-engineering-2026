@@ -16,7 +16,7 @@ import sqlite_vec
 
 from app.config import (
     EMBEDDING_DIMENSIONS, EMBEDDING_MAX_TOKENS, EMBEDDING_MODEL,
-    RAG_DB, RAG_DOCUMENT_IDS, RAG_SOURCE, RAG_TOP_K, RAG_TREE, get_api_key,
+    RAG_DB, RAG_DOCUMENT_IDS, RAG_NEIGHBOR_WINDOW, RAG_SOURCE, RAG_TOP_K, RAG_TREE, get_api_key,
     RAG_GRAPH, GRAPH_START_K, GRAPH_HOPS, GRAPH_MAX_RESULTS,
 )
 
@@ -135,7 +135,35 @@ def search(query: str) -> list[dict]:
                    vec_distance_cosine(embedding, ?) AS distance
             FROM chunks ORDER BY distance, page_id LIMIT ?
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
-        return [dict(row) for row in rows]
+        return add_neighbor_pages([dict(row) for row in rows])
+
+
+def add_neighbor_pages(hits: list[dict], window: int = RAG_NEIGHBOR_WINDOW) -> list[dict]:
+    """検索結果の各ページに、同じ資料の前後windowページの本文を付ける（第5回 宿題）。
+
+    - 別の資料はまたがない（document_id と PDF ページ番号で前後を決める）
+    - 検索結果に含まれるページや、すでに付けたページは重複して返さない
+    - 付けたページは role="neighbor"、neighbor_of=元の検索結果のpage_id。distanceは持たない
+    """
+    if window <= 0:
+        return hits
+    by_position = {(page["document_id"], page["page"]): page for page in load_pages(RAG_SOURCE)}
+    seen = {hit["page_id"] for hit in hits}
+    results = []
+    for hit in hits:
+        before, after = [], []
+        for offset in range(1, window + 1):
+            for sign, bucket in ((-1, before), (1, after)):
+                page = by_position.get((hit["document_id"], hit["page"] + sign * offset))
+                if page is None or page["page_id"] in seen:
+                    continue
+                seen.add(page["page_id"])
+                bucket.append({**page, "role": "neighbor", "neighbor_of": hit["page_id"]})
+        # 読みやすいよう、前のページ → 検索結果 → 次のページ の順に並べる
+        results.extend(sorted(before, key=lambda p: p["page"]))
+        results.append({**hit, "role": "hit"})
+        results.extend(after)
+    return results
 
 
 def search_graph(query: str) -> dict:
@@ -203,7 +231,8 @@ if __name__ == "__main__":
     parser.add_argument("query", help="調べたい内容")
     args = parser.parse_args()
     for i, result in enumerate(search(args.query), 1):
-        print(f"\n{'=' * 60}\n検索結果 {i}\n{'=' * 60}")
+        label = f"（前後ページ: p.{result['page']} ← 検索結果 {result['neighbor_of']}）" if result.get("role") == "neighbor" else ""
+        print(f"\n{'=' * 60}\n検索結果 {i}{label}\n{'=' * 60}")
         print(f"講義: {result['document_title']}")
         print(f"章: {result['section']}")
         print(f"タイトル: {result['title']}")
